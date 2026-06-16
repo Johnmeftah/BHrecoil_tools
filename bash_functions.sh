@@ -54,10 +54,11 @@ sync_from_mendel() {
 diff() {
   local file1="$1"
   local file2="$2"
+  local width=$(tput cols)
   {
     printf "\033[1;36m%-50s | %s\033[0m\n" "$file1" "$file2"
     printf "\033[1;36m%50s-+-%-50s\033[0m\n" "--------------------------------------------------" "--------------------------------------------------"
-    command diff -y --width=100 "$file1" "$file2" \
+    command diff -y --width=$width "$file1" "$file2" \
       | grep --color=always -E '\||<|>|$'
   } | less -R
 }
