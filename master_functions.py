@@ -5,19 +5,23 @@ import sys
 import os 
 from collections import Counter
 import matplotlib.pyplot as plt
-
+import glob 
 
 h = 0.67 # Hubble param to convert M_sun/h to M_sun
-hi_res_cut = 0.0  # fMhires threshold
+hi_res_cut = 0.1  # fMhires threshold
+
+snapshot = 'pioneer50h243.1536gst1bwK1BH.000345' 
+print(f"Using snapshot: {snapshot}")
 
 # load snapshot + AHF 
-def load_snapshot():
-    s = pn.load('pioneer50h243.1536gst1bwK1BH.000345')
+def load_snapshot(snapshot):
+    s = pn.load(snapshot)
     s.physical_units()  # converting code units to physical units 
     return s 
 
-def load_AHF():
-    AHF = pd.read_csv('pioneer50h243.1536gst1bwK1BH.000345.z4.993.AHF_halos', sep='\t', header=0)
+def load_AHF(snapshot):
+    AHF_file = glob.glob(snapshot + "*.AHF_halos")[0] 
+    AHF = pd.read_csv(AHF_file, sep='\t', header=0) 
     return AHF
    
 
@@ -69,9 +73,9 @@ def BH_count(s):
 
 # counting & IDing how many halos have BHs in them
 def BH_halos(s, AHF):
-    bhs = s.star[s.star['tform'] < 0]  
+    bhs = s.star[s.star['tform'] < 0]
     bh_grp = bhs['amiga.grp']  # halo ID each BH belongs to
-    counts = Counter(bh_grp)   # number of BHs per halo [halo_id: count]
+    counts = Counter(bh_grp)   # number of BHs per halo [halo_id: count] 
 
     for halo_id, n in sorted(counts.items()): # unpacking the dictionary into halo ID and count (key, value)
         if halo_id == 0:
@@ -90,12 +94,13 @@ def mass_range():
 
 # writing the full halos + BHs csv (will be used for the occupation fraction plot)
 def write_csvs():
-    ahf = load_AHF()
-    s = load_snapshot()
+    ahf = load_AHF(snapshot)
+    s = load_snapshot(snapshot)
     correct_masses = ahf[(ahf['#ID(1)'] != 0) & (ahf['fMhires(38)'] >= hi_res_cut)][['#ID(1)', 'Mhalo(4)']].copy()
     mass_of_halo_1 = ahf['Mhalo(4)'][1]
     print(f" mass of halo 1 is: {mass_of_halo_1}") 
-    correct_masses = correct_masses[correct_masses <= mass_of_halo_1]
+   # correct_masses = correct_masses[correct_masses <= mass_of_halo_1] # this might compare the whole df to one mass, can it corrupt the filtering?
+    correct_masses = correct_masses[correct_masses['Mhalo(4)'] <= mass_of_halo_1] # this only compares the mass column
     correct_masses.to_csv('halo_masses.csv', index=False)
     # s['amiga.grp']  # pre loading group array
     bhs = s.star[s.star['tform'] < 0]
@@ -114,10 +119,10 @@ def write_csvs():
        # if row.empty or row['fMhires(38)'].values[0] < hi_res_cut:
        #     continue
     BHhalos = bhs['amiga.grp']
-    print(f" the val of BHhalos is {BHhalos}")
+    print(f" the value of BHhalos is {BHhalos}")
     halos = np.unique(BHhalos)
     halos = halos[halos != 0]
-    print(f" the val of halos is {halos}")
+    print(f" the value of halos is {halos}")
        
     # getting halo masses 
 
@@ -134,22 +139,36 @@ def write_csvs():
 
 
 # making  OF plot
-def plot_of_pretty(n):
-    halo_mass = pd.read_csv('halo_masses.csv')['Mhalo(4)'] / h
+def plot_of(n):
+    halo_mass = pd.read_csv('halo_masses_from_amiga.csv')['Mvir'] 
     BH_halo_mass = pd.read_csv('BH_masses.csv')['Mhalo(4)'] / h 
-
-    log_min = np.floor(np.log10(halo_mass.min())) # find log 10 of the least massive halo, round down to nearest integer for min edge 
-    log_max = np.ceil(np.log10(halo_mass.max())) # find log 10 of the most massive halo, round up to nearest integer for max edge
+    log_min = np.log10(halo_mass.min()) # find log 10 of the least massive halo, round down to nearest integer for min edge 
+    log_max = np.log10(halo_mass.max()) # find log 10 of the most massive halo, round up to nearest integer for max edge
+     
     bin_edges = np.logspace(log_min, log_max, n + 1)
 
+    
+
+    #def count_in_bins(m, e, label=''):
+     #   counts = []
+      #  for lo, hi in zip(e[:-1], e[1:]): # loop through the bin edges, take the lower and upper edge of each bin
+       #     c = np.count_nonzero((m >= lo) & (m <= hi)) # count # of halos in that bin using boolean mask 
+        #    print(f"  {label} bin [{lo:.3e}, {hi:.3e}]: {c}") # print the count for that bin with the bin edges
+         #   counts.append(c) 
+        #return np.array(counts) 
     def count_in_bins(m, e, label=''):
         counts = []
-        for lo, hi in zip(e[:-1], e[1:]): # loop through the bin edges, take the lower and upper edge of each bin
-            c = np.count_nonzero((m > lo) & (m <= hi)) # count # of halos in that bin using boolean mask 
-            print(f"  {label} bin [{lo:.3e}, {hi:.3e}]: {c}") # print the count for that bin with the bin edges
-            counts.append(c) 
-        return np.array(counts) 
 
+        for i, (lo, hi) in enumerate(zip(e[:-1], e[1:])): # glue the 2 (lo & hi) lists together 
+            if i == 0: # if 1st bin = 0
+                c = np.count_nonzero((m >= lo) & (m <= hi)) # include both edges 
+            else: # the rest of the bins 
+                c = np.count_nonzero((m > lo) & (m <= hi)) # don't include to avoid dbl count
+            print(f" {label} bin [{lo:.3e}, {hi:.3e}]: {c}")
+            counts.append(c)
+
+        return np.array(counts)
+    
     print("ALL halos per bin:")
     count_all = count_in_bins(halo_mass, bin_edges, label='ALL')
     print("BH halos per bin:")
@@ -269,8 +288,80 @@ def fix_snapshot_zeros(s, snapshot_path):
         f.write(content)
     print(f"Updated startrun: {startrun_path}")
 
+# getting halo masses from the .stat file instead of ahf 
+def read_amiga_stat(snapshot):
+    stat_file = snapshot + ".amiga.stat"
+    names = ['Grp','N_tot','N_gas','N_star','N_dark','Mvir','Rvir','GasMass','StarMass','DarkMass','V_max','R@V_max','VelDisp','Xc','Yc','Zc','VXc','VYc','VZc','Contam','Satellite?','False?']
+    stat_file = pd.read_table(stat_file, names=names, header=0, dtype='str', sep=r'\s+') # needed an r 
+    return stat_file
 
-    
+def write_csvs_from_amiga_stat(snapshot):
+    stat_file = read_amiga_stat(snapshot)
+    halomasses = stat_file['Mvir']
+    halomasses.to_csv('halo_masses_from_amiga.csv', index=False)
+
+# plotting all the sims in one place 
+
+def plot_of_combined(n):
+    # 
+    sims = [
+    {'path': '/mnt/data0/jmeftah/changa_runs/sand_boxes/notmy_pioneer', 'label': 'No kicks', 'color': 'black'},
+    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil0', 'label': 'Aligned spin','color': 'blue'},
+    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil1', 'label': 'Anti-aligned', 'color': 'red'},
+    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil2', 'label': 'Random alignment', 'color': 'green'},
+]
+    # load each sim's halo masses and BH halo masses, and keep a running list of all
+    # halo masses so we can build one shared set of bin edges (same x-grid for every curve)
+    all_halo_mass = []
+    for sim in sims:
+        sim['halo_mass'] = pd.read_csv(os.path.join(sim['path'], 'halo_masses_from_amiga.csv'))['Mvir']
+        sim['BH_halo_mass'] = pd.read_csv(os.path.join(sim['path'], 'BH_masses.csv'))['Mhalo(4)'] / h
+        all_halo_mass.append(sim['halo_mass'])
+
+    combined_halo_mass = pd.concat(all_halo_mass)
+    log_min = np.log10(combined_halo_mass.min())
+    log_max = np.log10(combined_halo_mass.max())
+    bin_edges = np.logspace(log_min, log_max, n + 1)
+    bin_centers = np.sqrt(bin_edges[:-1] * bin_edges[1:])  # geometric mean for log bins
+
+    def count_in_bins(m, e):
+        counts = []
+        for i, (lo, hi) in enumerate(zip(e[:-1], e[1:])):
+            if i == 0:  # first bin includes both edges
+                c = np.count_nonzero((m >= lo) & (m <= hi))
+            else:  # rest of the bins, don't double count the shared edge
+                c = np.count_nonzero((m > lo) & (m <= hi))
+            counts.append(c)
+        return np.array(counts)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    for sim in sims:
+        count_all = count_in_bins(sim['halo_mass'], bin_edges)
+        count_BH = count_in_bins(sim['BH_halo_mass'], bin_edges)
+        occ_frac = np.where(count_all > 0, count_BH / count_all, 0.0)
+
+        ax.plot(bin_centers, occ_frac, lw=2, color=sim['color'], label=sim['label'], zorder=2)
+        ax.scatter(bin_centers, occ_frac, s=60, color=sim['color'], zorder=3)
+
+    ax.plot([], [], ' ', label='z = 5')  
+
+    ax.set_xscale('log')
+    ax.set_yscale('symlog', linthresh=0.01)
+    ax.set_xlabel(r'$M_\mathrm{halo}\ [M_\odot]$', fontsize=13)
+    ax.set_ylabel('BH occupation fraction', fontsize=13)
+     # ax.set_title(f'BH occupation fraction vs halo mass, z=5 ({n} bins)', fontsize=13)
+    ax.set_ylim(-0.05, 1.15)
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+
+  
+
+
+
 
 
 
@@ -279,25 +370,25 @@ def fix_snapshot_zeros(s, snapshot_path):
 command = sys.argv[1] if len(sys.argv) > 1 else None
 
 if command == "snap_keys":
-    snap_keys(load_snapshot())
+    snap_keys(load_snapshot(snapshot))
 
 elif command == "dm_minmax":
-    dm_minmax(load_snapshot())
+    dm_minmax(load_snapshot(snapshot))
 
 elif command == "AHF_keys":
-    AHF_keys(load_AHF())
+    AHF_keys(load_AHF(snapshot))
 
 elif command == "halo_count":
-    AHF_halo_info(load_AHF())
+    AHF_halo_info(load_AHF(snapshot))
 
 elif command == "halo_mass":
-    AHF_halo_mass(load_AHF())
+    AHF_halo_mass(load_AHF(snapshot))
 
 elif command == "BH_count":
-    BH_count(load_snapshot())
+    BH_count(load_snapshot(snapshot))
 
 elif command == "BH_halos":
-    BH_halos(load_snapshot(), load_AHF())
+    BH_halos(load_snapshot(snapshot), load_AHF(snapshot))
 
 elif command == "mass_range":
     mass_range() 
@@ -308,22 +399,33 @@ elif command == "write_csv":
 
 elif command == "plot_of":
     n = int(sys.argv[2].replace('-n', ''))
-    plot_of_pretty(n)
+    plot_of(n)
 
 elif command == "conv_vkick":
     value = float(sys.argv[2])
     conv_vkick(value)
 
 elif command == "check_hires":
-    check_fMhires(load_AHF())  
+    check_fMhires(load_AHF(snapshot))  
 
 elif command == "check_zeros":
-    check_snapshot_zeros(load_snapshot())
+    check_snapshot_zeros(load_snapshot(snapshot))
 
 elif command == "fix_zeros":
-    s = load_snapshot()
+    s = load_snapshot(snapshot)
     fix_snapshot_zeros(s, s.filename)
-   
+
+elif command == "write_halo_csv_amiga":
+    write_csvs_from_amiga_stat(snapshot)    
+
+elif command == "write_csv_amiga":
+    write_csvs_from_amiga_stat(snapshot)
+    # write_BH_halo_masses_from_amiga_stat(snapshot)
+
+elif command == "plot_of_all":
+    n = int(sys.argv[2].replace('-n', ''))
+    plot_of_combined(n)
+
 
 else:   
     print("Please enter one of the following commands:")
