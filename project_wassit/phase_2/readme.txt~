@@ -1,0 +1,2 @@
+Phase II:
+Loads those snapshots, finds all BH particles, and checks which halo each BH belongs to using the .amiga.grp info.
