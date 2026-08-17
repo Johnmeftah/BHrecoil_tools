@@ -141,7 +141,7 @@ def write_csvs():
 # making  OF plot
 def plot_of(n):
     halo_mass = pd.read_csv('halo_masses_from_amiga.csv')['Mvir'] 
-    BH_halo_mass = pd.read_csv('BH_masses.csv')['Mhalo(4)'] / h 
+    BH_halo_mass = pd.read_csv('BH_masses.csv')['Mhalo(4)']  / h 
     log_min = np.log10(halo_mass.min()) # find log 10 of the least massive halo, round down to nearest integer for min edge 
     log_max = np.log10(halo_mass.max()) # find log 10 of the most massive halo, round up to nearest integer for max edge
      
@@ -219,74 +219,261 @@ def check_fMhires(AHF):
         
 # checking snapshots for zeros
 def check_snapshot_zeros(s):
-    print(f"Checking snapshot: {s.filename}")
-    # checking for 0 mass particles 
+    # checking for 0 mass / NaN particles
     zero_dm = np.sum(s.dm['mass'] == 0)
     zero_gas = np.sum(s.gas['mass'] == 0)
     zero_star = np.sum(s.star['mass'] == 0)
-    nan_mass = np.sum(np.isnan(s.dm['mass'])) + np.sum(np.isnan(s.gas['mass'])) + np.sum(np.isnan(s.star['mass']))
+    nan_mass = (
+        np.sum(np.isnan(s.dm['mass']))
+        + np.sum(np.isnan(s.gas['mass']))
+        + np.sum(np.isnan(s.star['mass']))
+    )
 
-    print(f"Number of zero mass DM particles: {zero_dm}")
-    print(f"Number of zero mass gas particles: {zero_gas}")
-    print(f"Number of zero mass star particles: {zero_star}")
-    print(f"Number of NaN mass particles:{nan_mass}")
+    return {
+        'zero_dm': int(zero_dm),
+        'zero_gas': int(zero_gas),
+        'zero_star': int(zero_star),
+        'nan_mass': int(nan_mass),
+    }
 
-    if zero_dm > 0:
-        print(f"  WARNING: {zero_dm} zero mass DM particles found")
-    else:
-        print("  OK: No zero mass DM particles found.")
-    if zero_gas > 0:
-        print(f"  WARNING: {zero_gas} zero mass gas particles found")
-    else:
-        print("  OK: No zero mass gas particles found.")
-    if zero_star > 0:
-        print(f"  WARNING: {zero_star} zero mass star particles found")
-    else:
-        print("  OK: No zero mass star particles found.")
-    if nan_mass > 0:
-        print(f"  WARNING: {nan_mass} NaN mass particles found")
-    else:
-        print("  OK: No NaN mass particles found.")
+
+def check_all_snapshots_zeros():
+    
+    snapshots = sorted(glob.glob('*.[0-9][0-9][0-9][0-9][0-9][0-9]'))
+
+    if not snapshots:
+        print("No snapshots found in the current directory.")
+        return
+
+    print(f"Checking {len(snapshots)} snapshots...\n")
+
+    clean_count = 0
+    problem_snapshots = []
+    error_snapshots = []
+
+    for snapshot_path in snapshots:
+        step = snapshot_path.split('.')[-1]
+
+        try:
+            s = load_snapshot(snapshot_path)
+            result = check_snapshot_zeros(s)
+        except Exception as exc:
+            print(f"{step}  ERROR: could not load/check snapshot ({exc})")
+            error_snapshots.append(step)
+            continue
+
+        has_problem = any(result.values())
+
+        if not has_problem:
+            print(f"{step}  OK")
+            clean_count += 1
+            continue
+
+        print(f"{step}  WARNING")
+        print(f"zero-mass DM: {result['zero_dm']}")
+        print(f"zero-mass gas: {result['zero_gas']}")
+        print(f"zero-mass stars: {result['zero_star']}")
+        print(f"NaN masses: {result['nan_mass']}")
+        problem_snapshots.append(step)
+
+    print("\n--------------------------------")
+    print(f"Snapshots checked: {len(snapshots)}")
+    print(f"Clean snapshots: {clean_count}")
+    print(f"Problem snapshots: {len(problem_snapshots)}")
+    print(f"Load/check errors: {len(error_snapshots)}")
+
+    if problem_snapshots:
+        print("\nSnapshots with problems:")
+        for step in problem_snapshots:
+            print(step)
+
+    if error_snapshots:
+        print("\nSnapshots with load/check errors:")
+        for step in error_snapshots:
+            print(step)
+
+    print("--------------------------------")
 
 # removing zero mass particles from the snapshot + updating the startrun 
 
 def fix_snapshot_zeros(s, snapshot_path):
     if snapshot_path.endswith('.original'):
-        print("Snapshot is already a backup (.original), skipping.")
-        return
+        return {'status': 'skipped_backup', 'removed': 0}
 
-    step = snapshot_path.split('.')[-1] # split by . and take the last part (the 6 digits) 
+    step = snapshot_path.split('.')[-1]
     startrun_path = f"{step}.startrun"
     original_path = snapshot_path + ".original"
 
-    # rename the original snapshot to .original
+    # never overwrite an existing backup
+    if os.path.exists(original_path):
+        return {'status': 'backup_exists', 'removed': 0}
+
+    before = check_snapshot_zeros(s)
+    zero_total = before['zero_dm'] + before['zero_gas'] + before['zero_star']
+
+    # fixing zero-mass particles, not NaNs.
+    if zero_total == 0:
+        return {'status': 'clean', 'removed': 0, 'before': before}
+
+    # renaming the untouched snapshot to .original before writing anything new
     os.rename(snapshot_path, original_path)
-    print(f"Original snapshot backed up to: {original_path}")
 
-    # load the backup and strip zero-mass particles
-    s_raw = pn.load(original_path)
-    print(f"Fixing snapshot: {snapshot_path}")
-    clean = s_raw[s_raw['mass'] != 0]
+    try:
+        s_raw = pn.load(original_path)
+        clean = s_raw[s_raw['mass'] != 0]
+        clean.write(filename=snapshot_path, fmt=pn.tipsy.TipsySnap)
+    except Exception:
+        # if writing failed before a replacement snapshot exists, restore the original name
+        if not os.path.exists(snapshot_path) and os.path.exists(original_path):
+            os.rename(original_path, snapshot_path)
+        raise
 
-    # write clean snapshot back to the original name
-    clean.write(filename=snapshot_path, fmt=pn.tipsy.TipsySnap)
-    print(f"Cleaned snapshot saved to: {snapshot_path}")
+    startrun_status = 'not_found'
+    if os.path.exists(startrun_path):
+        with open(startrun_path, 'r') as f:
+            content = f.read()
+        content = content.replace(
+            f"ic_filename = {original_path}",
+            f"ic_filename = {snapshot_path}"
+        )
+        content = content.replace(
+            f"ic_filename = {snapshot_path}.clean",
+            f"ic_filename = {snapshot_path}"
+        )
+        with open(startrun_path, 'w') as f:
+            f.write(content)
+        startrun_status = 'updated'
 
-    # update startrun — the name stays the same so this is mostly a no-op,
-    with open(startrun_path, 'r') as f:
-        content = f.read()
-    content = content.replace(
-        f"ic_filename = {original_path}",
-        f"ic_filename = {snapshot_path}"
-    )
-    # also catch the case where it previously pointed to a .clean path
-    content = content.replace(
-        f"ic_filename = {snapshot_path}.clean",
-        f"ic_filename = {snapshot_path}"
-    )
-    with open(startrun_path, 'w') as f:
-        f.write(content)
-    print(f"Updated startrun: {startrun_path}")
+    # reloading the newly written snapshot and independently verify the repair
+    s_fixed = load_snapshot(snapshot_path)
+    after = check_snapshot_zeros(s_fixed)
+    remaining_zeros = after['zero_dm'] + after['zero_gas'] + after['zero_star']
+
+    return {
+        'status': 'fixed' if remaining_zeros == 0 else 'verification_failed',
+        'removed': zero_total,
+        'before': before,
+        'after': after,
+        'backup': original_path,
+        'startrun': startrun_status,
+    }
+
+
+def fix_all_snapshots_zeros():
+    # matching only normal snapshots ending in exactly six digits
+    # excluding files that have *.original
+    snapshots = sorted(glob.glob('*.[0-9][0-9][0-9][0-9][0-9][0-9]'))
+
+    if not snapshots:
+        print("No snapshots found in the current directory.")
+        return
+
+    print(f"Checking {len(snapshots)} snapshots and fixing zero-mass particles when needed:\n")
+
+    clean_steps = []
+    fixed_steps = []
+    nan_steps = []
+    backup_conflicts = []
+    verification_failures = []
+    error_steps = []
+
+    for snapshot_path in snapshots:
+        step = snapshot_path.split('.')[-1]
+
+        try:
+            s = load_snapshot(snapshot_path)
+            before = check_snapshot_zeros(s)
+        except Exception as exc:
+            print(f"{step}  ERROR: could not load/check snapshot ({exc})")
+            error_steps.append(step)
+            continue
+
+        zero_total = before['zero_dm'] + before['zero_gas'] + before['zero_star']
+
+        # NaNs are only reported, if any
+        if before['nan_mass'] > 0:
+            print(f"{step}  NaN FOUND -> NOT MODIFIED ({before['nan_mass']} NaN mass particles)")
+            nan_steps.append(step)
+            continue
+
+        if zero_total == 0:
+            print(f"{step}  OK")
+            clean_steps.append(step)
+            continue
+
+        original_path = snapshot_path + '.original'
+        if os.path.exists(original_path):
+            print(f"{step}  ZERO MASS FOUND -> NOT MODIFIED")
+            print(f"existing backup: {original_path}")
+            print("refusing to overwrite existing .original backup")
+            backup_conflicts.append(step)
+            continue
+
+        print(f"{step}  ZERO MASS FOUND -> fixing...")
+        print(f"zero-mass DM:{before['zero_dm']}")
+        print(f"zero-mass gas: {before['zero_gas']}")
+        print(f"zero-mass stars: {before['zero_star']}")
+
+        try:
+            result = fix_snapshot_zeros(s, snapshot_path)
+        except Exception as exc:
+            print(f"    ERROR while fixing: {exc}")
+            error_steps.append(step)
+            continue
+
+        if result['status'] == 'fixed':
+            print(f"removed: {result['removed']} particles")
+            print(f"backup: {result['backup']}")
+            if result['startrun'] == 'updated':
+                print(f"startrun: {step}.startrun updated")
+            else:
+                print(f"startrun: {step}.startrun not found")
+            print("    FIX VERIFIED")
+            fixed_steps.append(step)
+        else:
+            after = result.get('after', {})
+            print("WARNING: repair verification failed")
+            if after:
+                print(f"remaining zero-mass DM: {after['zero_dm']}")
+                print(f"remaining zero-mass gas: {after['zero_gas']}")
+                print(f"remaining zero-mass stars: {after['zero_star']}")
+            verification_failures.append(step)
+
+    print("\n--------------------------------")
+    print(f"Snapshots checked: {len(snapshots)}")
+    print(f"Already clean: {len(clean_steps)}")
+    print(f"Snapshots fixed: {len(fixed_steps)}")
+    print(f"NaN warnings: {len(nan_steps)}")
+    print(f"Backup conflicts: {len(backup_conflicts)}")
+    print(f"Verification failures: {len(verification_failures)}")
+    print(f"Load/fix errors: {len(error_steps)}")
+
+    if fixed_steps:
+        print("\nFixed:")
+        for step in fixed_steps:
+            print(step)
+
+    if nan_steps:
+        print("\nNaNs found; not modified:")
+        for step in nan_steps:
+            print(step)
+
+    if backup_conflicts:
+        print("\nExisting .original backup; not modified:")
+        for step in backup_conflicts:
+            print(step)
+
+    if verification_failures:
+        print("\nRepair verification failed:")
+        for step in verification_failures:
+            print(step)
+
+    if error_steps:
+        print("\nLoad/fix errors:")
+        for step in error_steps:
+            print(step)
+
+    print("--------------------------------")
 
 # getting halo masses from the .stat file instead of ahf 
 def read_amiga_stat(snapshot):
@@ -303,66 +490,251 @@ def write_csvs_from_amiga_stat(snapshot):
 # plotting all the sims in one place 
 
 def plot_of_combined(n):
-    # 
+    plt.rcParams.update({
+        "text.usetex": False,
+        "font.family": "serif",
+        "mathtext.fontset": "cm",
+    })
+
     sims = [
-    {'path': '/mnt/data0/jmeftah/changa_runs/sand_boxes/notmy_pioneer', 'label': 'No kicks', 'color': 'black'},
-    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil0', 'label': 'Aligned spin','color': 'blue'},
-    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil1', 'label': 'Anti-aligned', 'color': 'red'},
-    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil2', 'label': 'Random alignment', 'color': 'green'},
-]
-    # load each sim's halo masses and BH halo masses, and keep a running list of all
-    # halo masses so we can build one shared set of bin edges (same x-grid for every curve)
+        {'path': '/mnt/data0/jmeftah/changa_runs/sand_boxes/notmy_pioneer', 'label': 'No Kicks', 'color': 'black'},
+        {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil0', 'label': 'Aligned, random spin', 'color': 'blue'},
+        {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil1', 'label': 'Anti-aligned, random spin', 'color': 'red'},
+        {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil2', 'label': 'Random, random spin', 'color': 'green'},
+        {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/max_spin/JM_recoil0', 'label': 'Aligned, max spin ', 'color': 'gray'},
+        {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/max_spin/JM_recoil1', 'label': 'Anti-aligned, max spin ', 'color': 'purple'},
+        {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/max_spin/JM_recoil2', 'label': 'Random, max spin ', 'color': 'orange'}
+    ]
+
     all_halo_mass = []
     for sim in sims:
         sim['halo_mass'] = pd.read_csv(os.path.join(sim['path'], 'halo_masses_from_amiga.csv'))['Mvir']
-        sim['BH_halo_mass'] = pd.read_csv(os.path.join(sim['path'], 'BH_masses.csv'))['Mhalo(4)'] / h
+        sim['BH_halo_mass'] = pd.read_csv(os.path.join(sim['path'], 'BH_masses.csv'))['Mhalo(4)']  / h
         all_halo_mass.append(sim['halo_mass'])
+        all_halo_mass.append(sim['BH_halo_mass'])
 
     combined_halo_mass = pd.concat(all_halo_mass)
     log_min = np.log10(combined_halo_mass.min())
     log_max = np.log10(combined_halo_mass.max())
     bin_edges = np.logspace(log_min, log_max, n + 1)
     bin_centers = np.sqrt(bin_edges[:-1] * bin_edges[1:])  # geometric mean for log bins
+    log_bin_centers = np.log10(bin_centers)  # x-axis is now log10(M_halo/M_sun)
 
-    def count_in_bins(m, e):
+    def count_in_bins(m, e, label=''):
         counts = []
         for i, (lo, hi) in enumerate(zip(e[:-1], e[1:])):
-            if i == 0:  # first bin includes both edges
+            if i == 0:
                 c = np.count_nonzero((m >= lo) & (m <= hi))
-            else:  # rest of the bins, don't double count the shared edge
+            else:
                 c = np.count_nonzero((m > lo) & (m <= hi))
+            print(f"  {label} bin [{lo:.3e}, {hi:.3e}]: {c}")
             counts.append(c)
         return np.array(counts)
 
-    fig, ax = plt.subplots(figsize=(7, 5))
+    fig, ax = plt.subplots(figsize=(7, 5), dpi=200)
 
     for sim in sims:
-        count_all = count_in_bins(sim['halo_mass'], bin_edges)
-        count_BH = count_in_bins(sim['BH_halo_mass'], bin_edges)
+        print(f"{sim['label']}")
+        count_all = count_in_bins(sim['halo_mass'], bin_edges, label='ALL')
+        count_BH = count_in_bins(sim['BH_halo_mass'], bin_edges, label='BH')
+        occ_frac = np.where(count_all > 0, count_BH / count_all, 0.0)
+
+        ax.plot(log_bin_centers, occ_frac, lw=2, color=sim['color'], label=sim['label'], zorder=2)
+        ax.scatter(log_bin_centers, occ_frac, s=60, color=sim['color'], zorder=3)
+
+    ax.text(
+        0.98, 0.98,
+        'z = 5',
+        transform=ax.transAxes,
+        ha='right',
+        va='top',
+        fontsize=18,
+        bbox=dict(facecolor='white', alpha=0.0, edgecolor='none'))
+
+    ax.set_yscale('symlog', linthresh=0.01)
+    ax.set_xlabel(r'$\log_{10}(M_\mathrm{halo}/M_\odot)$', fontsize=13)
+    ax.set_ylabel('BH occupation fraction', fontsize=13)
+    ax.set_ylim(-0.005, 1.15)
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+def write_BH_csv_from_amiga_stat(snapshot):
+    stat = read_amiga_stat(snapshot)
+    stat['Grp'] = stat['Grp'].astype(int)
+    stat['Mvir'] = stat['Mvir'].astype(float)
+
+    s = load_snapshot(snapshot)
+    bhs = s.star[s.star['tform'] < 0]
+
+    halos = np.unique(bhs['amiga.grp'])
+    halos = halos[halos != 0]
+
+    rows = []
+
+    for halo_id in halos:
+        row = stat[stat['Grp'] == int(halo_id)]
+
+        if row.empty:
+            print(f"WARNING: halo {halo_id} not found")
+            continue
+
+        rows.append({
+            'halo_id': int(halo_id),
+            'Mvir': row['Mvir'].values[0],
+            'n_BH': np.count_nonzero(bhs['amiga.grp'] == halo_id)
+        })
+
+    df = pd.DataFrame(rows)
+    print(df)
+    df.to_csv('BH_masses_from_amiga_stat.csv', index=False)
+    print("saved BH_masses_from_amiga_stat.csv")
+  
+
+def plot_of_all_new(n):
+    
+    sims = [
+    {'path': '/mnt/data0/jmeftah/changa_runs/sand_boxes/notmy_pioneer', 'label': 'No kicks', 'color': 'black'},
+    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil0', 'label': 'Aligned, spin magnitude: random','color': 'blue'},
+    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil1', 'label': 'Anti-aligned, spin magnitude: random', 'color': 'red'},
+    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/rand_spin/JM_recoil2', 'label': 'Random, spin magnitude: random', 'color': 'green'},
+    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/max_spin/JM_recoil0', 'label': 'Aligned, spin magnitude: maximum','color': 'gray'},
+    {'path': '/mnt/data0/jmeftah/changa_runs/mendel_runs/max_spin/JM_recoil1', 'label': 'Anti-aligned, spin magnitude: maximum','color': 'purple'},
+    ]
+
+    all_halo_mass = []
+
+    for sim in sims:
+        sim['halo_mass'] = pd.read_csv(os.path.join(sim['path'], 'halo_masses_from_amiga.csv'))['Mvir']
+        sim['BH_halo_mass'] = pd.read_csv(os.path.join(sim['path'], 'BH_masses_from_amiga_stat.csv'))['Mvir']
+
+        all_halo_mass.append(sim['halo_mass'])
+        all_halo_mass.append(sim['BH_halo_mass'])
+
+    combined_halo_mass = pd.concat(all_halo_mass)
+
+    log_min = np.log10(combined_halo_mass.min())
+    log_max = np.log10(combined_halo_mass.max())
+
+    bin_edges = np.logspace(log_min, log_max, n + 1)
+
+    # protects against dropping the exact max value because of roundoff
+    bin_edges[0] = combined_halo_mass.min()
+    bin_edges[-1] = combined_halo_mass.max()
+    bin_edges[-1] = np.nextafter(bin_edges[-1], np.inf)
+
+    bin_centers = np.sqrt(bin_edges[:-1] * bin_edges[1:])
+
+    def count_in_bins(m, e, label=''):
+        counts = []
+
+        for i, (lo, hi) in enumerate(zip(e[:-1], e[1:])):
+            if i == 0:
+                c = np.count_nonzero((m >= lo) & (m <= hi))
+            else:
+                c = np.count_nonzero((m > lo) & (m <= hi))
+
+            print(f"  {label} bin [{lo:.3e}, {hi:.3e}]: {c}")
+            counts.append(c)
+
+        return np.array(counts)
+
+    fig, ax = plt.subplots(figsize=(7, 5), dpi=200)
+
+    for sim in sims:
+        print(f"\n{sim['label']}")
+
+        count_all = count_in_bins(sim['halo_mass'], bin_edges, label='ALL')
+        count_BH = count_in_bins(sim['BH_halo_mass'], bin_edges, label='BH')
+
         occ_frac = np.where(count_all > 0, count_BH / count_all, 0.0)
 
         ax.plot(bin_centers, occ_frac, lw=2, color=sim['color'], label=sim['label'], zorder=2)
         ax.scatter(bin_centers, occ_frac, s=60, color=sim['color'], zorder=3)
 
-    ax.plot([], [], ' ', label='z = 5')  
+    ax.text(
+        0.98, 0.98,
+        'z = 5',
+        transform=ax.transAxes,
+        ha='right',
+        va='top',
+        fontsize=18,
+        bbox=dict(facecolor='white', alpha=0.0, edgecolor='none')
+    )
 
     ax.set_xscale('log')
     ax.set_yscale('symlog', linthresh=0.01)
+
     ax.set_xlabel(r'$M_\mathrm{halo}\ [M_\odot]$', fontsize=13)
     ax.set_ylabel('BH occupation fraction', fontsize=13)
-     # ax.set_title(f'BH occupation fraction vs halo mass, z=5 ({n} bins)', fontsize=13)
+
     ax.set_ylim(-0.05, 1.15)
     ax.legend()
+
     plt.tight_layout()
     plt.show()
 
+# plot number of mergers 
+def plot_merger_counts():
+    plt.rcParams.update({
+        "text.usetex": False,
+        "font.family": "serif",
+        "mathtext.fontset": "cm",
+    })
 
+    groups = [
+        {'name': 'No Kicks', 'bars': [('No kicks', 9, 'black')]},
+        {'name': 'Random spin\nmagnitude', 'bars': [('Aligned', 7, 'blue'), ('Anti-aligned', 3, 'red'), ('Random', 3, 'green')]},
+        {'name': 'Max spin\nmagnitude', 'bars': [('Aligned', 5, 'gray'), ('Anti-aligned', 2, 'purple')]},
+    ]
 
-  
+    bar_width = 0.6
+    inner_gap = 0.15
+    group_gap = 1.0
 
+    x_ticks = []
+    x_tick_labels = []
+    legend_handles = {}
 
+    fig, ax = plt.subplots(figsize=(7.5, 5), dpi=200)
 
+    x_cursor = 0.0
+    for group in groups:
+        n = len(group['bars'])
+        group_width = n * bar_width + (n - 1) * inner_gap
+        start_x = x_cursor
+        for i, (label, count, color) in enumerate(group['bars']):
+            x = start_x + i * (bar_width + inner_gap)
+            bar = ax.bar(x, count, width=bar_width, color=color, edgecolor='black', linewidth=0.8)
+            if color not in legend_handles:
+                legend_handles[color] = (bar[0], label)
+        group_center = start_x + group_width / 2 - bar_width / 2
+        x_ticks.append(group_center)
+        x_tick_labels.append(group['name'])
+        x_cursor = start_x + group_width + group_gap
 
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels(x_tick_labels, fontsize=12)
+
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.set_ylim(0, max(c for g in groups for _, c, _ in g['bars']) * 1.2)
+
+    ax.text(
+        0.98, 1.06,
+        'z = 5',
+        transform=ax.transAxes,
+        ha='right',
+        va='top',
+        fontsize=18,
+        bbox=dict(facecolor='white', alpha=0.0, edgecolor='none'))
+
+    ax.set_ylabel('Number of mergers', fontsize=13)
+    handles = [v[0] for v in legend_handles.values()]
+    labels = [v[1] for v in legend_handles.values()]
+    ax.legend(handles, labels, frameon=False, fontsize=11)
+    plt.tight_layout()
+    plt.show()
 
 
 
@@ -409,22 +781,31 @@ elif command == "check_hires":
     check_fMhires(load_AHF(snapshot))  
 
 elif command == "check_zeros":
-    check_snapshot_zeros(load_snapshot(snapshot))
+    check_all_snapshots_zeros()
 
 elif command == "fix_zeros":
-    s = load_snapshot(snapshot)
-    fix_snapshot_zeros(s, s.filename)
+    fix_all_snapshots_zeros()
 
 elif command == "write_halo_csv_amiga":
     write_csvs_from_amiga_stat(snapshot)    
 
-elif command == "write_csv_amiga":
-    write_csvs_from_amiga_stat(snapshot)
+# elif command == "write_csv_amiga":
+  #  write_csvs_from_amiga_stat(snapshot)
     # write_BH_halo_masses_from_amiga_stat(snapshot)
 
 elif command == "plot_of_all":
     n = int(sys.argv[2].replace('-n', ''))
     plot_of_combined(n)
+
+elif command == "write_BH_csv_amiga":
+    write_BH_csv_from_amiga_stat(snapshot)
+
+elif command == "plot_of_all_new":
+    n = int(sys.argv[2].replace('-n', ''))
+    plot_of_all_new(n)
+
+elif command == "plot_mergers_counts":
+    plot_merger_counts()
 
 
 else:   
@@ -442,4 +823,4 @@ else:
     print("python master_functions.py conv_vkick <comoving velocity> — convert a kick velocity from code units to km/s")
     print("python master_functions.py check_hires — print fMhires values for the first few halos to verify their values")
     print("python master_functions.py check_zeros — check for zero mass particles in the snapshot")
-    print("python master_functions.py fix_zeros — create a cleaned snapshot without zero mass particles and update startruns.txt to use it")
+    print("python master_functions.py fix_zeros — scan all snapshots and safely repair only those with zero-mass particles")
