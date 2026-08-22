@@ -1,0 +1,8 @@
+Day 3: loops (for & while).
+
+Today, we will:
+# 1. Load a real Changa snapshot with pynbody
+# 2. Call .families() on it — this returns a list of the family objects present (gas, dm, star)
+# 3. Write a for loop over that list of families
+# 4. Inside the loop, for each family, print its name and its particle count (hint: len(snapshot[family]) gives you the count for that specific family)
+# 5. Inside the same loop, add an if/else: if that family has more than 1000000 particles, print "large family", otherwise print "small family"
