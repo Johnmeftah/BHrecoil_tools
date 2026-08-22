@@ -1,9 +1,0 @@
-Day 2: if, eilf, and else conditions.
-
-1. if condition:
-# runs if condition is True
-2. elif other_condition:
-# runs if the first was False, but this one is True
-3. else:
-# runs if nothing above was True
-Please note that this is not the ideal way to load snapshots, but for now, it's ok.
