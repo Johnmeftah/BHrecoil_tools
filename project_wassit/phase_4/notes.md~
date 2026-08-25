@@ -1,0 +1,1 @@
+In Phase 4, I will modify the get_snaps_below(target, snapshot_dict) function so that it goes back one additional snapshot to find the halo_id of the remnant BH’s host halo before the merger.
