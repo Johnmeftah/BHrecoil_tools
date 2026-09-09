@@ -12,7 +12,8 @@ What it does:
 - Calculates dx, dy, and dz between the BH and halo center.
 - Calculates the total 3D displacement:
 
+$$
 r = \sqrt{dx^2 + dy^2 + dz^2}
-
+$$
 
 Current issue: The BH position is taken from the closest available time in `.BlackHoles`, so it may not exactly match the merger time.
